@@ -128,6 +128,6 @@ systemctl --user status verifidod.service
 This project is licensed under the MIT License. 
 
 Copyright (c) 2021 Peter Sanford (original author)  
-Copyright (c) 2023-2024 Current maintainers
+Copyright (c) 2025 Scott Rushforth
 
 See the [LICENSE](LICENSE) file for the full license text.
