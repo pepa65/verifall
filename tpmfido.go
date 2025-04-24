@@ -9,18 +9,23 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"flag"
-	"log"
 	"math/big"
+	"os"
 	"time"
 
 	"github.com/psanford/tpm-fido/attestation"
+	"github.com/psanford/tpm-fido/config"
 	"github.com/psanford/tpm-fido/fidoauth"
 	"github.com/psanford/tpm-fido/fidohid"
+	"github.com/psanford/tpm-fido/fprintd"
 	"github.com/psanford/tpm-fido/memory"
 	"github.com/psanford/tpm-fido/pinentry"
+	"github.com/psanford/tpm-fido/revocation"
+	"github.com/psanford/tpm-fido/seclog"
 	"github.com/psanford/tpm-fido/sitesignatures"
 	"github.com/psanford/tpm-fido/statuscode"
 	"github.com/psanford/tpm-fido/tpm"
+	"github.com/psanford/tpm-fido/validate"
 )
 
 var backend = flag.String("backend", "tpm", "tpm|memory")
@@ -29,6 +34,37 @@ var device = flag.String("device", "/dev/tpmrm0", "TPM device path")
 func main() {
 	flag.Parse()
 	
+	// Initialize secure logging
+	seclog.SetLevel(seclog.LevelInfo)
+	
+	// Load configuration
+	err := config.LoadConfig("")
+	if err != nil {
+		seclog.Fatal("Failed to load configuration: %v", err)
+	}
+	
+	// Initialize revocation database
+	err = revocation.Initialize("")
+	if err != nil {
+		seclog.Fatal("Failed to initialize revocation database: %v", err)
+	}
+	
+	// Validate TPM device path
+	if _, err := os.Stat(config.Get().TPMDevicePath); os.IsNotExist(err) {
+		seclog.Fatal("TPM device not found at %s", config.Get().TPMDevicePath)
+	}
+	
+	// Check fingerprint capabilities but don't fail yet
+	fpCap := fprintd.HasFingerprintReader()
+	fpEnr := fprintd.HasEnrolledFingerprints()
+	
+	if !fpCap || !fpEnr {
+		seclog.Warn("Fingerprint capabilities limited - reader: %v, enrolled: %v", fpCap, fpEnr)
+		if config.Get().RequireFingerprint {
+			seclog.Fatal("Fingerprint authentication required but not available")
+		}
+	}
+	
 	// We'll detect fingerprint capabilities lazily when needed,
 	// and only check once per invocation to avoid multiple privilege prompts
 	s := newServer()
@@ -36,9 +72,13 @@ func main() {
 }
 
 type server struct {
-	pe                *pinentry.Pinentry
-	signer            Signer
-	useFingerprintAuth bool
+	pe                    *pinentry.Pinentry
+	signer                Signer
+	useFingerprintAuth    bool
+	// Add tracking for each auth step
+	tpmAuthSucceeded      bool
+	fingerprintAuthSucceeded bool
+	fingerprintVerified   bool // Track if we've verified fingerprint capability
 }
 
 type Signer interface {
@@ -64,13 +104,13 @@ func newServer() *server {
 	if *backend == "tpm" {
 		signer, err := tpm.New(*device)
 		if err != nil {
-			panic(err)
+			seclog.Fatal("Failed to initialize TPM signer: %v", err)
 		}
 		s.signer = signer
 	} else if *backend == "memory" {
 		signer, err := memory.New()
 		if err != nil {
-			panic(err)
+			seclog.Fatal("Failed to initialize memory signer: %v", err)
 		}
 		s.signer = signer
 	}
@@ -81,36 +121,36 @@ func (s *server) run() {
 	ctx := context.Background()
 
 	if pinentry.FindPinentryGUIPath() == "" {
-		log.Printf("warning: no gui pinentry binary detected in PATH. tpm-fido may not work correctly without a gui based pinentry")
+		seclog.Warn("No gui pinentry binary detected in PATH. tpm-fido may not work correctly without a gui based pinentry")
 	}
 
 	token, err := fidohid.New(ctx, "tpm-fido")
 	if err != nil {
-		log.Fatalf("create fido hid error: %s", err)
+		seclog.Fatal("Create fido hid error: %s", err)
 	}
 
 	go token.Run(ctx)
 
 	for evt := range token.Events() {
 		if evt.Error != nil {
-			log.Printf("got token error: %s", err)
+			seclog.Error("Got token error: %s", err)
 			continue
 		}
 
 		req := evt.Req
 
 		if req.Command == fidoauth.CmdAuthenticate {
-			log.Printf("got AuthenticateCmd site=%s", sitesignatures.FromAppParam(req.Authenticate.ApplicationParam))
+			seclog.Info("Got AuthenticateCmd site=%s", sitesignatures.FromAppParam(req.Authenticate.ApplicationParam))
 
 			s.handleAuthenticate(ctx, token, evt)
 		} else if req.Command == fidoauth.CmdRegister {
-			log.Printf("got RegisterCmd site=%s", sitesignatures.FromAppParam(req.Register.ApplicationParam))
+			seclog.Info("Got RegisterCmd site=%s", sitesignatures.FromAppParam(req.Register.ApplicationParam))
 			s.handleRegister(ctx, token, evt)
 		} else if req.Command == fidoauth.CmdVersion {
-			log.Print("got VersionCmd")
+			seclog.Debug("Got VersionCmd")
 			s.handleVersion(ctx, token, evt)
 		} else {
-			log.Printf("unsupported request type: 0x%02x\n", req.Command)
+			seclog.Debug("Unsupported request type: 0x%02x", req.Command)
 			// send a not supported error for any commands that we don't understand.
 			// Browsers depend on this to detect what features the token supports
 			// (i.e. the u2f backwards compatibility)
@@ -125,157 +165,260 @@ func (s *server) handleVersion(parentCtx context.Context, token *fidohid.SoftTok
 
 func (s *server) handleAuthenticate(parentCtx context.Context, token *fidohid.SoftToken, evt fidohid.AuthEvent) {
 	req := evt.Req
-
+	
+	// Reset auth state for new request
+	s.tpmAuthSucceeded = false
+	s.fingerprintAuthSucceeded = false
+	
 	keyHandle := req.Authenticate.KeyHandle
 	appParam := req.Authenticate.ApplicationParam[:]
-
-	dummySig := sha256.Sum256([]byte("meticulously-Bacardi"))
-
-	_, err := s.signer.SignASN1(keyHandle, appParam, dummySig[:])
-	if err != nil {
-		log.Printf("invalid key: %s (key handle size: %d)", err, len(keyHandle))
-
-		err := token.WriteResponse(parentCtx, evt, nil, statuscode.WrongData)
-		if err != nil {
-			log.Printf("send bad key handle msg err: %s", err)
-		}
-
+	
+	// Validate inputs
+	if err := validate.KeyHandle(keyHandle); err != nil {
+		seclog.Error("Key handle validation failed: %v", err)
+		token.WriteResponse(parentCtx, evt, nil, statuscode.WrongData)
 		return
 	}
-
+	
+	if err := validate.ApplicationParameter(appParam); err != nil {
+		seclog.Error("Application parameter validation failed: %v", err)
+		token.WriteResponse(parentCtx, evt, nil, statuscode.WrongData)
+		return
+	}
+	
+	if err := validate.Challenge(req.Authenticate.ChallengeParam[:]); err != nil {
+		seclog.Error("Challenge validation failed: %v", err)
+		token.WriteResponse(parentCtx, evt, nil, statuscode.WrongData)
+		return
+	}
+	
+	// Check if key is revoked
+	keyHash := validate.ComputeKeyHash(keyHandle)
+	isRevoked, err := revocation.IsRevoked(keyHash)
+	if err != nil {
+		seclog.Error("Error checking revocation status: %v", err)
+		token.WriteResponse(parentCtx, evt, nil, statuscode.WrongData)
+		return
+	}
+	
+	if isRevoked {
+		seclog.SecurityEvent("Attempt to use revoked key: %s", keyHash)
+		token.WriteResponse(parentCtx, evt, nil, statuscode.WrongData)
+		return
+	}
+	
+	// STEP 1: TPM Verification - Validate key handle
+	dummySig := sha256.Sum256([]byte("meticulously-Bacardi"))
+	
+	_, err = s.signer.SignASN1(keyHandle, appParam, dummySig[:])
+	if err != nil {
+		seclog.Error("Invalid key: %s (key handle size: %d)", err, len(keyHandle))
+		err := token.WriteResponse(parentCtx, evt, nil, statuscode.WrongData)
+		if err != nil {
+			seclog.Error("Send bad key handle msg err: %s", err)
+		}
+		return
+	}
+	
+	// TPM key verification succeeded
+	s.tpmAuthSucceeded = true
+	seclog.Info("TPM key verification succeeded")
+	
+	// Enforce control mode validation
 	switch req.Authenticate.Ctrl {
 	case fidoauth.CtrlCheckOnly,
 		fidoauth.CtrlDontEnforeUserPresenceAndSign,
 		fidoauth.CtrlEnforeUserPresenceAndSign:
 	default:
-		log.Printf("unknown authenticate control value: %d", req.Authenticate.Ctrl)
-
+		seclog.Error("Unknown authenticate control value: %d", req.Authenticate.Ctrl)
 		err := token.WriteResponse(parentCtx, evt, nil, statuscode.WrongData)
 		if err != nil {
-			log.Printf("send wrong-data msg err: %s", err)
+			seclog.Error("Send wrong-data msg err: %s", err)
 		}
 		return
 	}
-
+	
 	if req.Authenticate.Ctrl == fidoauth.CtrlCheckOnly {
-		// check if the provided key is known by the token
-		log.Printf("check-only success")
-		// test-of-user-presence-required: note that despite the name this signals a success condition
+		seclog.Info("Check-only success")
 		err := token.WriteResponse(parentCtx, evt, nil, statuscode.ConditionsNotSatisfied)
 		if err != nil {
-			log.Printf("send bad key handle msg err: %s", err)
+			seclog.Error("Send bad key handle msg err: %s", err)
 		}
 		return
 	}
-
-	var userPresent uint8
-
-	if req.Authenticate.Ctrl == fidoauth.CtrlEnforeUserPresenceAndSign {
-
-		pinResultCh, err := s.pe.ConfirmPresence("FIDO Confirm Auth", req.Authenticate.ChallengeParam, req.Authenticate.ApplicationParam)
-
-		if err != nil {
-			log.Printf("pinentry err: %s", err)
+	
+	// STEP 2: ALWAYS require fingerprint auth
+	var userPresent uint8 = 0 // Default to not present
+	
+	// We ALWAYS enforce fingerprint verification, regardless of ctrl mode
+	if !s.fingerprintVerified {
+		// Check if fingerprint hardware is available (once per session)
+		hasReader := fprintd.HasFingerprintReader()
+		hasEnrolled := fprintd.HasEnrolledFingerprints()
+		
+		if !hasReader || !hasEnrolled {
+			seclog.Error("Fingerprint verification unavailable - reader: %v, enrolled: %v", 
+					  hasReader, hasEnrolled)
 			token.WriteResponse(parentCtx, evt, nil, statuscode.ConditionsNotSatisfied)
-
 			return
 		}
-
-		childCtx, cancel := context.WithTimeout(parentCtx, 750*time.Millisecond)
-		defer cancel()
-
-		select {
-		case result := <-pinResultCh:
-			if result.OK {
-				userPresent = 0x01
-			} else {
-				if result.Error != nil {
-					log.Printf("Got pinentry result err: %s", result.Error)
-				}
-
-				// Got user cancelation, we want to propagate that so the browser gives up.
-				// This isn't normally supported by a key so there's no status code for this.
-				// WrongData seems like the least incorrect status code ¯\_(ツ)_/¯
-				err := token.WriteResponse(parentCtx, evt, nil, statuscode.WrongData)
-				if err != nil {
-					log.Printf("Write WrongData resp err: %s", err)
-				}
-				return
-			}
-		case <-childCtx.Done():
-			err := token.WriteResponse(parentCtx, evt, nil, statuscode.ConditionsNotSatisfied)
-			if err != nil {
-				log.Printf("Write swConditionsNotSatisfied resp err: %s", err)
-			}
-			return
-		}
+		
+		s.fingerprintVerified = true
 	}
-
+	
+	timeout := time.Duration(config.Get().VerificationTimeout) * time.Millisecond
+	pinResultCh, err := s.pe.ConfirmPresence("FIDO Confirm Auth", req.Authenticate.ChallengeParam, req.Authenticate.ApplicationParam)
+	if err != nil {
+		seclog.Error("Pinentry err: %s", err)
+		token.WriteResponse(parentCtx, evt, nil, statuscode.ConditionsNotSatisfied)
+		return
+	}
+	
+	childCtx, cancel := context.WithTimeout(parentCtx, timeout)
+	defer cancel()
+	
+	select {
+	case result := <-pinResultCh:
+		if result.OK {
+			userPresent = 0x01
+			s.fingerprintAuthSucceeded = true
+			seclog.Info("Fingerprint verification succeeded")
+		} else {
+			if result.Error != nil {
+				seclog.Error("Got pinentry result err: %s", result.Error)
+			}
+			
+			// Reject authentication if fingerprint fails
+			err := token.WriteResponse(parentCtx, evt, nil, statuscode.WrongData)
+			if err != nil {
+				seclog.Error("Write WrongData resp err: %s", err)
+			}
+			return
+		}
+	case <-childCtx.Done():
+		seclog.Error("Fingerprint verification timed out")
+		err := token.WriteResponse(parentCtx, evt, nil, statuscode.ConditionsNotSatisfied)
+		if err != nil {
+			seclog.Error("Write swConditionsNotSatisfied resp err: %s", err)
+		}
+		return
+	}
+	
+	// STEP 3: Enforce dual-factor requirement
+	if !s.isFullyAuthenticated() {
+		seclog.Error("Dual-factor auth requirement not met - TPM: %v, Fingerprint: %v", 
+				  s.tpmAuthSucceeded, s.fingerprintAuthSucceeded)
+		err := token.WriteResponse(parentCtx, evt, nil, statuscode.ConditionsNotSatisfied)
+		if err != nil {
+			seclog.Error("Write auth denial err: %s", err)
+		}
+		return
+	}
+	
+	// Both factors succeeded - continue with signing
 	signCounter := s.signer.Counter()
-
+	
 	var toSign bytes.Buffer
 	toSign.Write(req.Authenticate.ApplicationParam[:])
 	toSign.WriteByte(userPresent)
 	binary.Write(&toSign, binary.BigEndian, signCounter)
 	toSign.Write(req.Authenticate.ChallengeParam[:])
-
+	
 	sigHash := sha256.New()
 	sigHash.Write(toSign.Bytes())
-
+	
 	sig, err := s.signer.SignASN1(keyHandle, appParam, sigHash.Sum(nil))
 	if err != nil {
-		log.Fatalf("auth sign err: %s", err)
+		seclog.Error("Auth sign err: %s", err)
+		token.WriteResponse(parentCtx, evt, nil, statuscode.WrongData)
+		return
 	}
-
+	
 	var out bytes.Buffer
 	out.WriteByte(userPresent)
 	binary.Write(&out, binary.BigEndian, signCounter)
 	out.Write(sig)
-
+	
+	seclog.Info("Authentication successful with both TPM and fingerprint")
 	err = token.WriteResponse(parentCtx, evt, out.Bytes(), statuscode.NoError)
 	if err != nil {
-		log.Printf("write auth response err: %s", err)
+		seclog.Error("Write auth response err: %s", err)
 		return
 	}
 }
 
 func (s *server) handleRegister(parentCtx context.Context, token *fidohid.SoftToken, evt fidohid.AuthEvent) {
-	ctx, cancel := context.WithTimeout(parentCtx, 750*time.Millisecond)
+	// Reset auth state
+	s.fingerprintAuthSucceeded = false
+	
+	// Longer timeout for registration
+	timeout := time.Duration(config.Get().VerificationTimeout) * time.Millisecond
+	ctx, cancel := context.WithTimeout(parentCtx, timeout)
 	defer cancel()
 	req := evt.Req
-
-	pinResultCh, err := s.pe.ConfirmPresence("FIDO Confirm Register", req.Register.ChallengeParam, req.Register.ApplicationParam)
-
-	if err != nil {
-		log.Printf("pinentry err: %s", err)
-		token.WriteResponse(ctx, evt, nil, statuscode.ConditionsNotSatisfied)
-
+	
+	// Validate inputs
+	if err := validate.Challenge(req.Register.ChallengeParam[:]); err != nil {
+		seclog.Error("Challenge validation failed: %v", err)
+		token.WriteResponse(ctx, evt, nil, statuscode.WrongData)
 		return
 	}
-
+	
+	if err := validate.ApplicationParameter(req.Register.ApplicationParam[:]); err != nil {
+		seclog.Error("Application parameter validation failed: %v", err)
+		token.WriteResponse(ctx, evt, nil, statuscode.WrongData)
+		return
+	}
+	
+	// ALWAYS check fingerprint hardware first
+	if !s.fingerprintVerified {
+		hasReader := fprintd.HasFingerprintReader()
+		hasEnrolled := fprintd.HasEnrolledFingerprints()
+		
+		if !hasReader || !hasEnrolled {
+			seclog.Error("Fingerprint verification unavailable - reader: %v, enrolled: %v", 
+					  hasReader, hasEnrolled)
+			token.WriteResponse(ctx, evt, nil, statuscode.ConditionsNotSatisfied)
+			return
+		}
+		
+		s.fingerprintVerified = true
+	}
+	
+	// Require fingerprint authentication
+	pinResultCh, err := s.pe.ConfirmPresence("FIDO Confirm Register", req.Register.ChallengeParam, req.Register.ApplicationParam)
+	if err != nil {
+		seclog.Error("Pinentry err: %s", err)
+		token.WriteResponse(ctx, evt, nil, statuscode.ConditionsNotSatisfied)
+		return
+	}
+	
 	select {
 	case result := <-pinResultCh:
 		if !result.OK {
 			if result.Error != nil {
-				log.Printf("Got pinentry result err: %s", result.Error)
+				seclog.Error("Got pinentry result err: %s", result.Error)
 			}
-
-			// Got user cancelation, we want to propagate that so the browser gives up.
-			// This isn't normally supported by a key so there's no status code for this.
-			// WrongData seems like the least incorrect status code ¯\_(ツ)_/¯
+			
 			err := token.WriteResponse(ctx, evt, nil, statuscode.WrongData)
 			if err != nil {
-				log.Printf("Write WrongData resp err: %s", err)
+				seclog.Error("Write WrongData resp err: %s", err)
 				return
 			}
 			return
 		}
-
+		
+		// Fingerprint succeeded
+		s.fingerprintAuthSucceeded = true
+		seclog.Info("Fingerprint verification succeeded for registration")
+		
+		// Continue with site registration (which uses TPM)
 		s.registerSite(parentCtx, token, evt)
 	case <-ctx.Done():
+		seclog.Error("Fingerprint verification timed out during registration")
 		err := token.WriteResponse(ctx, evt, nil, statuscode.ConditionsNotSatisfied)
 		if err != nil {
-			log.Printf("Write swConditionsNotSatisfied resp err: %s", err)
+			seclog.Error("Write swConditionsNotSatisfied resp err: %s", err)
 			return
 		}
 	}
@@ -283,37 +426,59 @@ func (s *server) handleRegister(parentCtx context.Context, token *fidohid.SoftTo
 
 func (s *server) registerSite(ctx context.Context, token *fidohid.SoftToken, evt fidohid.AuthEvent) {
 	req := evt.Req
-
+	
+	// Reset TPM auth status
+	s.tpmAuthSucceeded = false
+	
 	keyHandle, x, y, err := s.signer.RegisterKey(req.Register.ApplicationParam[:])
 	if err != nil {
-		log.Printf("RegisteKey err: %s", err)
+		seclog.Error("RegisterKey err: %s", err)
+		token.WriteResponse(ctx, evt, nil, statuscode.WrongData)
 		return
 	}
-
+	
+	// TPM key generation succeeded
+	s.tpmAuthSucceeded = true
+	seclog.Info("TPM key generation succeeded")
+	
 	if len(keyHandle) > 255 {
-		log.Printf("Error: keyHandle too large: %d, max=255", len(keyHandle))
+		seclog.Error("Error: keyHandle too large: %d, max=255", len(keyHandle))
+		token.WriteResponse(ctx, evt, nil, statuscode.WrongData)
 		return
 	}
-
+	
+	// Enforce dual-factor requirement for registration
+	if !s.isFullyAuthenticated() {
+		seclog.Error("Dual-factor auth requirement not met during registration - TPM: %v, Fingerprint: %v", 
+				  s.tpmAuthSucceeded, s.fingerprintAuthSucceeded)
+		err := token.WriteResponse(ctx, evt, nil, statuscode.ConditionsNotSatisfied)
+		if err != nil {
+			seclog.Error("Write auth denial err: %s", err)
+		}
+		return
+	}
+	
 	childPubKey := elliptic.Marshal(elliptic.P256(), x, y)
-
+	
 	var toSign bytes.Buffer
 	toSign.WriteByte(0)
 	toSign.Write(req.Register.ApplicationParam[:])
 	toSign.Write(req.Register.ChallengeParam[:])
 	toSign.Write(keyHandle)
 	toSign.Write(childPubKey)
-
+	
 	sigHash := sha256.New()
 	sigHash.Write(toSign.Bytes())
-
+	
 	sum := sigHash.Sum(nil)
-
+	
 	sig, err := ecdsa.SignASN1(rand.Reader, attestation.PrivateKey, sum)
 	if err != nil {
-		log.Fatalf("attestation sign err: %s", err)
+		seclog.Error("Attestation sign err: %s", err)
+		token.WriteResponse(ctx, evt, nil, statuscode.WrongData)
+		return
 	}
-
+	
 	var out bytes.Buffer
 	out.WriteByte(0x05) // reserved value
 	out.Write(childPubKey)
@@ -321,18 +486,30 @@ func (s *server) registerSite(ctx context.Context, token *fidohid.SoftToken, evt
 	out.Write(keyHandle)
 	out.Write(attestation.CertDer)
 	out.Write(sig)
-
+	
+	// Store key hash for potential future revocation
+	keyHash := validate.ComputeKeyHash(keyHandle)
+	seclog.SecurityEvent("New key registered: %s for application %s", 
+				keyHash, sitesignatures.FromAppParam(req.Register.ApplicationParam))
+	
 	err = token.WriteResponse(ctx, evt, out.Bytes(), statuscode.NoError)
 	if err != nil {
-		log.Printf("write register response err: %s", err)
+		seclog.Error("Write register response err: %s", err)
 		return
 	}
+	
+	seclog.Info("Registration successful with both TPM and fingerprint")
+}
+
+// isFullyAuthenticated checks if both authentication factors succeeded
+func (s *server) isFullyAuthenticated() bool {
+	return s.tpmAuthSucceeded && s.fingerprintAuthSucceeded
 }
 
 func mustRand(size int) []byte {
 	b := make([]byte, size)
 	if _, err := rand.Read(b); err != nil {
-		panic(err)
+		seclog.Fatal("Failed to generate random bytes: %v", err)
 	}
 
 	return b

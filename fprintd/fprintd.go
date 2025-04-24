@@ -3,11 +3,11 @@ package fprintd
 import (
 	"errors"
 	"fmt"
-	"log"
 	"os/user"
 	"time"
 
-	"github.com/godbus/dbus"
+	"github.com/godbus/dbus/v5"
+	"github.com/psanford/tpm-fido/seclog"
 )
 
 const (
@@ -60,7 +60,7 @@ func Verify() (bool, error) {
 		return false, errors.New("no fingerprint readers available")
 	}
 	
-	log.Printf("Using fingerprint device: %s", devicePath)
+	seclog.Info("Using fingerprint device: %s", devicePath)
 	
 	// Get the device object
 	device := conn.Object(fprintdService, devicePath)
@@ -93,9 +93,9 @@ func Verify() (bool, error) {
 	// Always release the device when we're done
 	defer func() {
 		if err := device.Call(fprintdDevInterface+".Release", 0).Err; err != nil {
-			log.Printf("Error releasing device: %v", err)
+			seclog.Error("Error releasing device: %v", err)
 		} else {
-			log.Printf("Device released successfully")
+			seclog.Debug("Device released successfully")
 		}
 	}()
 	
@@ -104,7 +104,7 @@ func Verify() (bool, error) {
 		return false, fmt.Errorf("error starting verification: %w", err)
 	}
 	
-	log.Printf("Fingerprint verification started for user %s", currentUser.Username)
+	seclog.Info("Fingerprint verification started for user %s", currentUser.Username)
 	
 	// Wait for verification to complete with timeout
 	resultChan := make(chan bool)
@@ -119,24 +119,24 @@ func Verify() (bool, error) {
 			
 			// Per docs, VerifyStatus sends (result string, done bool)
 			if len(signal.Body) < 2 {
-				log.Printf("Signal body too short: %v", signal.Body)
+				seclog.Error("Signal body too short: %v", signal.Body)
 				continue
 			}
 			
 			// Extract status and done flag
 			status, ok := signal.Body[0].(string)
 			if !ok {
-				log.Printf("Status not a string: %T %v", signal.Body[0], signal.Body[0])
+				seclog.Error("Status not a string: %T %v", signal.Body[0], signal.Body[0])
 				continue
 			}
 			
 			done, ok := signal.Body[1].(bool)
 			if !ok {
-				log.Printf("Done flag not a bool: %T %v", signal.Body[1], signal.Body[1])
+				seclog.Error("Done flag not a bool: %T %v", signal.Body[1], signal.Body[1])
 				continue
 			}
 			
-			log.Printf("Got verification status: %s (done: %v)", status, done)
+			seclog.Debug("Got verification status: %s (done: %v)", status, done)
 			
 			// Only process if done is true
 			if !done {
@@ -167,13 +167,20 @@ func Verify() (bool, error) {
 	// Wait for result or error with timeout
 	select {
 	case result := <-resultChan:
+		if result {
+			seclog.SecurityEvent("Fingerprint verification succeeded")
+		} else {
+			seclog.Warn("Fingerprint verification failed - no match")
+		}
 		return result, nil
 	case err := <-errorChan:
+		seclog.Error("Fingerprint verification error: %v", err)
 		return false, err
 	case <-time.After(30 * time.Second):
 		// Timeout after 30 seconds
 		// Stop the verification
 		device.Call(fprintdDevInterface+".VerifyStop", 0)
+		seclog.Error("Fingerprint verification timed out")
 		return false, errors.New("fingerprint verification timed out")
 	}
 }
@@ -183,7 +190,7 @@ func HasFingerprintReader() bool {
 	// Connect to system bus
 	conn, err := dbus.SystemBus()
 	if err != nil {
-		log.Printf("Error connecting to system bus: %v", err)
+		seclog.Error("Error connecting to system bus: %v", err)
 		return false
 	}
 	
@@ -192,14 +199,16 @@ func HasFingerprintReader() bool {
 	err = conn.Object(fprintdService, dbus.ObjectPath(fprintdPath)).Call(
 		fprintdInterface+".GetDefaultDevice", 0).Store(&devicePath)
 	if err != nil {
+		seclog.Debug("No fingerprint reader found: %v", err)
 		return false
 	}
 	
 	if devicePath == "" || devicePath == "/" {
+		seclog.Debug("Empty device path returned")
 		return false
 	}
 	
-	log.Printf("Found fingerprint reader at: %v", devicePath)
+	seclog.Info("Found fingerprint reader at: %v", devicePath)
 	return true
 }
 
@@ -207,14 +216,16 @@ func HasFingerprintReader() bool {
 func HasEnrolledFingerprints() bool {
 	fingers, err := ListEnrolledFingers()
 	if err != nil {
+		seclog.Debug("Error listing enrolled fingerprints: %v", err)
 		return false
 	}
 	
 	if len(fingers) > 0 {
-		log.Printf("Found enrolled fingerprints: %v", fingers)
+		seclog.Info("Found enrolled fingerprints: %v", fingers)
 		return true
 	}
 	
+	seclog.Debug("No enrolled fingerprints found")
 	return false
 }
 

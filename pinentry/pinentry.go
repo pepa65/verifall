@@ -84,13 +84,12 @@ func (pe *Pinentry) ConfirmPresence(prompt string, challengeParam, applicationPa
 }
 
 func (pe *Pinentry) prompt(req *request, prompt string) {
+	// Use atomic operations for status flags
 	sendResult := func(r Result) {
 		select {
 		case req.pendingResult <- r:
 		case <-time.After(req.timeout):
-			// we expect requests to come in every ~750ms.
-			// If we've been waiting for 2 seconds the client
-			// is likely gone.
+			log.Printf("Warning: Client may have disappeared - timeout sending result")
 		}
 
 		pe.mu.Lock()
@@ -98,28 +97,45 @@ func (pe *Pinentry) prompt(req *request, prompt string) {
 		pe.mu.Unlock()
 	}
 
-	// Always use fingerprint verification - no dialog fallback
+	// ALWAYS use fingerprint verification
 	log.Printf("Starting fingerprint verification")
 	
-	// Try to verify the fingerprint - will fail if no fingerprints enrolled or no reader
-	fpResult, err := fprintd.Verify()
+	// Implement exponential backoff for fingerprint verification
+	maxRetries := 3
+	retryDelay := 500 * time.Millisecond
 	
-	if err != nil {
-		// Any fingerprint error is a hard failure - no fallback
-		log.Printf("Fingerprint verification error: %v", err)
-		sendResult(Result{
-			OK: false,
-			Error: fmt.Errorf("fingerprint verification failed: %w", err),
-		})
-		return
+	for i := 0; i < maxRetries; i++ {
+		fpResult, err := fprintd.Verify()
+		
+		if err == nil {
+			// Return the result only if verification succeeded
+			if fpResult {
+				log.Printf("Fingerprint verification succeeded")
+				sendResult(Result{OK: true})
+				return
+			}
+			
+			log.Printf("Fingerprint verification failed (attempt %d/%d)", i+1, maxRetries)
+			
+			// Not an error, but verification failed
+			if i == maxRetries-1 {
+				sendResult(Result{OK: false})
+				return
+			}
+		} else {
+			// Critical error - no retry
+			log.Printf("Fingerprint verification error: %v", err)
+			sendResult(Result{
+				OK: false,
+				Error: fmt.Errorf("fingerprint verification failed: %w", err),
+			})
+			return
+		}
+		
+		// Exponential backoff
+		time.Sleep(retryDelay)
+		retryDelay *= 2
 	}
-	
-	// Return the fingerprint verification result directly
-	log.Printf("Fingerprint verification result: %v", fpResult)
-	sendResult(Result{
-		OK: fpResult,
-	})
-	return
 }
 
 func FindPinentryGUIPath() string {
