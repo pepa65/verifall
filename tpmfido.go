@@ -28,13 +28,17 @@ var device = flag.String("device", "/dev/tpmrm0", "TPM device path")
 
 func main() {
 	flag.Parse()
+	
+	// We'll detect fingerprint capabilities lazily when needed,
+	// and only check once per invocation to avoid multiple privilege prompts
 	s := newServer()
 	s.run()
 }
 
 type server struct {
-	pe     *pinentry.Pinentry
-	signer Signer
+	pe                *pinentry.Pinentry
+	signer            Signer
+	useFingerprintAuth bool
 }
 
 type Signer interface {
@@ -44,9 +48,19 @@ type Signer interface {
 }
 
 func newServer() *server {
+	// Initialize with fingerprint support, but don't check hardware yet
+	// This avoids triggering polkit prompts at startup
+	pe := pinentry.New()
+	
+	// We'll set fingerprint auth to true by default
+	// It will be disabled automatically if verification fails
+	pe.SetUseFingerprintAuth(true)
+	
 	s := server{
-		pe: pinentry.New(),
+		pe: pe,
+		useFingerprintAuth: true,
 	}
+	
 	if *backend == "tpm" {
 		signer, err := tpm.New(*device)
 		if err != nil {

@@ -11,15 +11,26 @@ import (
 
 	assuan "github.com/foxcpp/go-assuan/client"
 	"github.com/foxcpp/go-assuan/pinentry"
+	"github.com/psanford/tpm-fido/fprintd"
 )
 
 func New() *Pinentry {
-	return &Pinentry{}
+	return &Pinentry{
+		useFingerprintAuth: true, // Always use fingerprint auth
+	}
 }
 
 type Pinentry struct {
-	mu            sync.Mutex
-	activeRequest *request
+	mu                sync.Mutex
+	activeRequest     *request
+	useFingerprintAuth bool
+}
+
+// SetUseFingerprintAuth enables or disables fingerprint authentication
+func (pe *Pinentry) SetUseFingerprintAuth(use bool) {
+	pe.mu.Lock()
+	defer pe.mu.Unlock()
+	pe.useFingerprintAuth = use
 }
 
 type request struct {
@@ -87,55 +98,28 @@ func (pe *Pinentry) prompt(req *request, prompt string) {
 		pe.mu.Unlock()
 	}
 
-	childCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	p, cmd, err := launchPinEntry(childCtx)
+	// Always use fingerprint verification - no dialog fallback
+	log.Printf("Starting fingerprint verification")
+	
+	// Try to verify the fingerprint - will fail if no fingerprints enrolled or no reader
+	fpResult, err := fprintd.Verify()
+	
 	if err != nil {
+		// Any fingerprint error is a hard failure - no fallback
+		log.Printf("Fingerprint verification error: %v", err)
 		sendResult(Result{
-			OK:    false,
-			Error: fmt.Errorf("failed to start pinentry: %w", err),
+			OK: false,
+			Error: fmt.Errorf("fingerprint verification failed: %w", err),
 		})
 		return
 	}
-	defer func() {
-		cancel()
-		cmd.Wait()
-	}()
-
-	defer p.Shutdown()
-	p.SetTitle("TPM-FIDO")
-	p.SetPrompt("TPM-FIDO")
-	p.SetDesc(prompt)
-
-	promptResult := make(chan bool)
-
-	go func() {
-		err := p.Confirm()
-		promptResult <- err == nil
-	}()
-
-	timer := time.NewTimer(req.timeout)
-
-	for {
-		select {
-		case ok := <-promptResult:
-			sendResult(Result{
-				OK: ok,
-			})
-			return
-		case <-timer.C:
-			sendResult(Result{
-				OK:    false,
-				Error: errors.New("request timed out"),
-			})
-			return
-		case d := <-req.extendTimeout:
-			if !timer.Stop() {
-				<-timer.C
-			}
-			timer.Reset(d)
-		}
-	}
+	
+	// Return the fingerprint verification result directly
+	log.Printf("Fingerprint verification result: %v", fpResult)
+	sendResult(Result{
+		OK: fpResult,
+	})
+	return
 }
 
 func FindPinentryGUIPath() string {
