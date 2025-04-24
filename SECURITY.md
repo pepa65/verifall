@@ -64,4 +64,3 @@ For maximum security:
 2. Implement periodic key rotation (90-day suggested)
 3. Monitor logs for unauthorized access attempts
 4. Use hardware-based TPM 2.0 modules rather than firmware TPM
-5. Enforce strong PIN policies for fingerprint fallback (if used)
