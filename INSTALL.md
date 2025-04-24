@@ -6,8 +6,9 @@ This guide explains how to install the VerifidoD service as a systemd user servi
 
 - Go 1.22 or later
 - A TPM 2.0 device
-- Fingerprint reader with enrolled fingerprints
+- Fingerprint reader with enrolled fingerprints (Goodix readers supported by default)
 - Linux system with systemd and fprintd installed
+- User in the `tss` group for TPM access
 
 ## Building the Binary
 
@@ -25,6 +26,42 @@ This guide explains how to install the VerifidoD service as a systemd user servi
    sudo cp verifidod /usr/local/bin/
    sudo chmod +x /usr/local/bin/verifidod
    ```
+
+## Device Access Setup
+
+1. Create a udev rules file for device access:
+   ```
+   sudo nano /etc/udev/rules.d/70-fido.rules
+   ```
+
+2. Add the following rules:
+   ```
+   # Goodix fingerprint reader WebAuthn access
+   KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="27c6", ATTRS{idProduct}=="658c", TAG+="uaccess"
+
+   # Configure uhid permissions for TPM group access
+   KERNEL=="uhid", SUBSYSTEM=="misc", GROUP="tss", MODE="0660"
+   ```
+
+3. Reload and apply the udev rules:
+   ```
+   sudo udevadm control --reload-rules
+   sudo udevadm trigger
+   ```
+
+4. Add your user to the appropriate groups based on your distribution:
+   ```
+   # On Fedora/RedHat systems:
+   sudo usermod -aG tss $USER
+
+   # On Ubuntu/Debian systems you might need:
+   sudo usermod -aG tss,input $USER
+
+   # On some systems you might need a specific uhid group:
+   sudo groupadd -r uhid  # Create group if it doesn't exist
+   sudo usermod -aG uhid $USER
+   ```
+   *Note: You'll need to log out and back in for these changes to take effect*
 
 ## Fingerprint Authentication Setup
 
