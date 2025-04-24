@@ -1,8 +1,7 @@
 [Unit]
 Description=VerifidoD FIDO TPM Authentication Service with fprintd
 Documentation=https://github.com/cowboyrushforth/verifidod
-After=network.target fprintd.service
-Requires=fprintd.service
+After=network.target 
 
 [Service]
 Type=simple
