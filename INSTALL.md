@@ -1,6 +1,6 @@
-# TPM-FIDO Installation and Security Guide
+# VerifidoD Installation and Security Guide
 
-This guide explains how to install the TPM-FIDO service as a systemd user service with security hardening.
+This guide explains how to install the VerifidoD service as a systemd user service with security hardening.
 
 ## Requirements
 
@@ -22,8 +22,8 @@ This guide explains how to install the TPM-FIDO service as a systemd user servic
 
 2. Copy the binary to `/usr/local/bin`:
    ```
-   sudo cp tpm-fido /usr/local/bin/
-   sudo chmod +x /usr/local/bin/tpm-fido
+   sudo cp verifidod /usr/local/bin/
+   sudo chmod +x /usr/local/bin/verifidod
    ```
 
 ## Fingerprint Authentication Setup
@@ -54,7 +54,7 @@ This service should be installed as a user service, not as root:
 
 2. Copy the service file to the user directory:
    ```
-   cp tpm-fido.service ~/.config/systemd/user/
+   cp verifidod.service ~/.config/systemd/user/
    ```
 
 3. Reload systemd user daemon:
@@ -64,20 +64,20 @@ This service should be installed as a user service, not as root:
 
 4. Enable and start the service:
    ```
-   systemctl --user enable tpm-fido.service
-   systemctl --user start tpm-fido.service
+   systemctl --user enable verifidod.service
+   systemctl --user start verifidod.service
    ```
 
 5. Check the service status:
    ```
-   systemctl --user status tpm-fido.service
+   systemctl --user status verifidod.service
    ```
 
 > **Important Note**: The service must be run as a user service, not as root, to access TPM devices correctly. Running as root may cause permission issues.
 
 ## Security Configuration
 
-The service creates a configuration directory at `~/.config/tpm-fido/` with:
+The service creates a configuration directory at `~/.config/verifidod/` with:
 
 - `config.json`: Configuration settings including security options
 - `revoked_keys.json`: Database of revoked keys
@@ -86,7 +86,7 @@ The service creates a configuration directory at `~/.config/tpm-fido/` with:
 
 To revoke a compromised key, use the command:
 ```
-tpm-fido --revoke-key=<key-hash> --reason="Suspected compromise"
+verifidod --revoke-key=<key-hash> --reason="Suspected compromise"
 ```
 
 ## Security Hardening Features
@@ -104,12 +104,12 @@ This implementation provides several security enhancements:
 
 To view the user service logs:
 ```
-journalctl --user -u tpm-fido.service
+journalctl --user -u verifidod.service
 ```
 
 To follow the logs in real-time:
 ```
-journalctl --user -u tpm-fido.service -f
+journalctl --user -u verifidod.service -f
 ```
 
 ## Compromise Recovery
@@ -118,12 +118,12 @@ If you suspect a security compromise:
 
 1. Stop the service:
    ```
-   systemctl --user stop tpm-fido.service
+   systemctl --user stop verifidod.service
    ```
 
 2. Revoke all keys:
    ```
-   tpm-fido --revoke-all
+   verifidod --revoke-all
    ```
 
 3. Re-enroll fingerprints:
@@ -134,19 +134,19 @@ If you suspect a security compromise:
 
 4. Restart the service:
    ```
-   systemctl --user start tpm-fido.service
+   systemctl --user start verifidod.service
    ```
 
 ## Uninstalling
 
 To disable and stop the user service:
 ```
-systemctl --user disable tpm-fido.service
-systemctl --user stop tpm-fido.service
-rm ~/.config/systemd/user/tpm-fido.service
+systemctl --user disable verifidod.service
+systemctl --user stop verifidod.service
+rm ~/.config/systemd/user/verifidod.service
 ```
 
 To remove the binary:
 ```
-sudo rm /usr/local/bin/tpm-fido
+sudo rm /usr/local/bin/verifidod
 ```

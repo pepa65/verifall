@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/godbus/dbus/v5"
-	"github.com/psanford/tpm-fido/seclog"
+	"github.com/cowboyrushforth/verifidod/seclog"
 )
 
 const (

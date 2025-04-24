@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 	
-	"github.com/psanford/tpm-fido/seclog"
+	"github.com/cowboyrushforth/verifidod/seclog"
 )
 
 // RevokedKey represents a revoked key
@@ -41,7 +41,7 @@ func Initialize(path string) error {
 		if err != nil {
 			return fmt.Errorf("cannot get home directory: %w", err)
 		}
-		path = filepath.Join(home, ".config", "tpm-fido", "revoked_keys.json")
+		path = filepath.Join(home, ".config", "verifidod", "revoked_keys.json")
 	}
 	
 	dbPath = path

@@ -1,6 +1,6 @@
-# TPM-FIDO Security Hardening Guide
+# VerifidoD Security Hardening Guide
 
-This document provides a comprehensive security assessment and hardening recommendations for the TPM-FIDO application. The recommendations focus on ensuring that authentication always requires both TPM and fingerprint verification without fallback mechanisms.
+This document provides a comprehensive security assessment and hardening recommendations for the VerifidoD application. The recommendations focus on ensuring that authentication always requires both TPM and fingerprint verification without fallback mechanisms.
 
 ## IMPLEMENTED SECURITY FIXES
 

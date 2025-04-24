@@ -1,0 +1,44 @@
+[Unit]
+Description=VerifidoD FIDO TPM Authentication Service with fprintd
+Documentation=https://github.com/cowboyrushforth/verifidod
+After=network.target fprintd.service
+Requires=fprintd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/verifidod
+Restart=on-failure
+RestartSec=5
+
+# Hardening options
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=read-only
+ProtectSystem=strict  # Upgraded from full
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+
+# Additional security options
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+ProtectClock=true
+ProtectProc=invisible
+ProcSubset=pid
+# Allow access to devices while maintaining some security
+PrivateDevices=false
+# Still restrict to only the devices we need
+DeviceAllow=/dev/tpmrm0 rw
+DeviceAllow=/dev/tpm0 rw
+DeviceAllow=/dev/uhid rw
+
+[Install]
+WantedBy=default.target

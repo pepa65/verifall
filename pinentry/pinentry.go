@@ -11,7 +11,7 @@ import (
 
 	assuan "github.com/foxcpp/go-assuan/client"
 	"github.com/foxcpp/go-assuan/pinentry"
-	"github.com/psanford/tpm-fido/fprintd"
+	"github.com/cowboyrushforth/verifidod/fprintd"
 )
 
 func New() *Pinentry {

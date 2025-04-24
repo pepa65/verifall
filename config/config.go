@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"sync"
 	
-	"github.com/psanford/tpm-fido/seclog"
+	"github.com/cowboyrushforth/verifidod/seclog"
 )
 
 // Configuration holds the application configuration
@@ -58,7 +58,7 @@ func LoadConfig(configPath string) error {
 		if err != nil {
 			return fmt.Errorf("cannot get home directory: %w", err)
 		}
-		configPath = filepath.Join(home, ".config", "tpm-fido", "config.json")
+		configPath = filepath.Join(home, ".config", "verifidod", "config.json")
 	}
 	
 	// Check if file exists

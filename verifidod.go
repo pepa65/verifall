@@ -13,19 +13,19 @@ import (
 	"os"
 	"time"
 
-	"github.com/psanford/tpm-fido/attestation"
-	"github.com/psanford/tpm-fido/config"
-	"github.com/psanford/tpm-fido/fidoauth"
-	"github.com/psanford/tpm-fido/fidohid"
-	"github.com/psanford/tpm-fido/fprintd"
-	"github.com/psanford/tpm-fido/memory"
-	"github.com/psanford/tpm-fido/pinentry"
-	"github.com/psanford/tpm-fido/revocation"
-	"github.com/psanford/tpm-fido/seclog"
-	"github.com/psanford/tpm-fido/sitesignatures"
-	"github.com/psanford/tpm-fido/statuscode"
-	"github.com/psanford/tpm-fido/tpm"
-	"github.com/psanford/tpm-fido/validate"
+	"github.com/cowboyrushforth/verifidod/attestation"
+	"github.com/cowboyrushforth/verifidod/config"
+	"github.com/cowboyrushforth/verifidod/fidoauth"
+	"github.com/cowboyrushforth/verifidod/fidohid"
+	"github.com/cowboyrushforth/verifidod/fprintd"
+	"github.com/cowboyrushforth/verifidod/memory"
+	"github.com/cowboyrushforth/verifidod/pinentry"
+	"github.com/cowboyrushforth/verifidod/revocation"
+	"github.com/cowboyrushforth/verifidod/seclog"
+	"github.com/cowboyrushforth/verifidod/sitesignatures"
+	"github.com/cowboyrushforth/verifidod/statuscode"
+	"github.com/cowboyrushforth/verifidod/tpm"
+	"github.com/cowboyrushforth/verifidod/validate"
 )
 
 var backend = flag.String("backend", "tpm", "tpm|memory")
@@ -36,6 +36,7 @@ func main() {
 	
 	// Initialize secure logging
 	seclog.SetLevel(seclog.LevelInfo)
+	
 	
 	// Load configuration
 	err := config.LoadConfig("")
@@ -121,10 +122,10 @@ func (s *server) run() {
 	ctx := context.Background()
 
 	if pinentry.FindPinentryGUIPath() == "" {
-		seclog.Warn("No gui pinentry binary detected in PATH. tpm-fido may not work correctly without a gui based pinentry")
+		seclog.Warn("No gui pinentry binary detected in PATH. verifidod may not work correctly without a gui based pinentry")
 	}
 
-	token, err := fidohid.New(ctx, "tpm-fido")
+	token, err := fidohid.New(ctx, "verifidod")
 	if err != nil {
 		seclog.Fatal("Create fido hid error: %s", err)
 	}
@@ -377,7 +378,7 @@ func (s *server) handleRegister(parentCtx context.Context, token *fidohid.SoftTo
 		
 		if !hasReader || !hasEnrolled {
 			seclog.Error("Fingerprint verification unavailable - reader: %v, enrolled: %v", 
-					  hasReader, hasEnrolled)
+				  hasReader, hasEnrolled)
 			token.WriteResponse(ctx, evt, nil, statuscode.ConditionsNotSatisfied)
 			return
 		}
@@ -514,3 +515,4 @@ func mustRand(size int) []byte {
 
 	return b
 }
+

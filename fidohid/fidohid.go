@@ -9,7 +9,7 @@ import (
 	"io"
 	"log"
 
-	"github.com/psanford/tpm-fido/fidoauth"
+	"github.com/cowboyrushforth/verifidod/fidoauth"
 	"github.com/psanford/uhid"
 )
 

@@ -1,4 +1,4 @@
-module github.com/psanford/tpm-fido
+module github.com/cowboyrushforth/verifidod
 
 go 1.24
 

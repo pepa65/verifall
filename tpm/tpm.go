@@ -13,8 +13,8 @@ import (
 	"github.com/google/go-tpm/tpm2"
 	"github.com/google/go-tpm/tpm2/transport"
 	"github.com/google/go-tpm/tpm2/transport/linuxtpm"
-	"github.com/psanford/tpm-fido/internal/lencode"
-	"github.com/psanford/tpm-fido/seclog"
+	"github.com/cowboyrushforth/verifidod/internal/lencode"
+	"github.com/cowboyrushforth/verifidod/seclog"
 	"golang.org/x/crypto/cryptobyte"
 	"golang.org/x/crypto/cryptobyte/asn1"
 	"golang.org/x/crypto/hkdf"
@@ -54,7 +54,7 @@ func New(devicePath string) (*TPM, error) {
 }
 
 func primaryKeyTmpl(seed, applicationParam []byte) tpm2.TPMTPublic {
-	info := append([]byte("tpm-fido-application-key"), applicationParam...)
+	info := append([]byte("verifidod-application-key"), applicationParam...)
 
 	r := hkdf.New(sha256.New, seed, []byte{}, info)
 	
@@ -490,6 +490,7 @@ func (t *TPM) SignASN1(keyHandle, applicationParam, digest []byte) ([]byte, erro
 
 	return b.Bytes()
 }
+
 
 func mustRand(size int) []byte {
 	b := make([]byte, size)
