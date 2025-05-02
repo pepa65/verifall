@@ -3,6 +3,8 @@ package sitesignatures
 import (
 	"crypto/sha256"
 	"fmt"
+	"net/url"
+	"strings"
 )
 
 // from https://github.com/danstiner/rust-u2f/blob/master/u2f-core/src/known_app_ids.rs
@@ -24,13 +26,41 @@ var reverseSignatures = map[[32]byte]string{
 	hashURL("https://www.dropbox.com/u2f-app-id.json"):          "dropbox.com",
 	hashURL("https://www.fastmail.com"):                         "www.fastmail.com",
 	hashURL("https://www.gstatic.com/securitykey/origins.json"): "google.com",
-
+	
+	// Add Okta-related entries
+	hashURL("https://okta.com"):                               "okta.com",
+	hashURL("https://login.okta.com"):                         "okta.com",
+	hashURL("https://dev-12345.okta.com"):                     "okta.com",
+	
+	// Add entries from logs for this specific environment
+	// These are appearing as "unknown" in our logs
+	{0xb7, 0xd9, 0xed, 0xf4, 0xa4, 0xb6, 0xa6, 0x3e, 0xb6, 0x23, 0x14, 0x50, 0x38, 0xe7, 0x84, 0x4f, 0x25, 0xb0, 0x81, 0x2b, 0xfb, 0xa9, 0xa7, 0xab, 0x24, 0x50, 0x20, 0x20, 0x78, 0xca, 0x80, 0x7b}: "okta.com", // Direct Okta login
+	{0xdd, 0x4a, 0x83, 0x91, 0x42, 0x63, 0x6b, 0x9a, 0xc7, 0xfb, 0xaa, 0xa5, 0xe8, 0xa9, 0x87, 0x01, 0xd0, 0x2c, 0xf8, 0xd9, 0x08, 0x39, 0x8f, 0x30, 0xc4, 0xa5, 0x7a, 0x98, 0xe7, 0x52, 0xb1, 0x65}: "okta.sso", // GitHub SSO to Okta
+	{0xe8, 0x45, 0x41, 0xea, 0xf2, 0x07, 0xf7, 0xd7, 0x5a, 0xd0, 0x51, 0x43, 0x47, 0x70, 0xf6, 0xd1, 0xa9, 0xbf, 0x62, 0xf7, 0xea, 0x9b, 0xe5, 0x14, 0xfd, 0x4e, 0x0c, 0xa8, 0x27, 0x2b, 0x1d, 0xeb}: "github.com", // GitHub origin
+	{0x38, 0xab, 0x1c, 0xad, 0xb8, 0x19, 0xa7, 0x7d, 0x35, 0xc5, 0x0c, 0x30, 0x4b, 0x9e, 0xc9, 0xdf, 0x3c, 0x1d, 0x5c, 0x48, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}: "github.com", // From latest log
+	
 	hashURL("bin.coffee"):          "bin.coffee",
 	hashURL("coinbase.com"):        "coinbase.com",
 	hashURL("demo.yubico.com"):     "demo.yubico.com",
 	hashURL("github.com"):          "github.com",
 	hashURL("webauthn.bin.coffee"): "webauthn.bin.coffee",
 	hashURL("webauthn.io"):         "webauthn.io",
+}
+
+// domainMap maps root domains to all associated credentials
+// This enables FIDO2-style RP ID matching
+var domainMap = map[string][]string{
+	"github.com": {"github.com", "github.com/u2f/trusted_facets"},
+	"okta.com":   {"okta.com", "login.okta.com", "dev-12345.okta.com", "okta.sso"},
+	// Add more as needed
+}
+
+// domainParents maps subdomains to their parent domain
+// This enables handling SSO across related domains
+var domainParents = map[string]string{
+	"login.okta.com":     "okta.com",
+	"dev-12345.okta.com": "okta.com",
+	"okta.sso":           "okta.com",
 }
 
 func hashURL(url string) [32]byte {
@@ -43,4 +73,82 @@ func FromAppParam(sig [32]byte) string {
 		site = fmt.Sprintf("<unknown %x>", sig)
 	}
 	return site
+}
+
+// HasMatchingRPID checks if an application parameter (hash) matches any known RPID
+// following FIDO2 rules where credentials can be used with any subdomain of the RP
+func HasMatchingRPID(appParam [32]byte, targetRPID string) bool {
+	siteName := FromAppParam(appParam)
+	
+	// If we couldn't identify the site, it's not a match
+	if strings.HasPrefix(siteName, "<unknown") {
+		return false
+	}
+	
+	// Direct match
+	if siteName == targetRPID {
+		return true
+	}
+	
+	// Check if the site belongs to the same parent domain
+	if parentDomain, exists := domainParents[siteName]; exists {
+		if parentDomain == targetRPID {
+			return true
+		}
+	}
+	
+	// Check if the targetRPID is a subdomain of the registered site
+	// Per FIDO2 spec, credentials registered with example.com can be used on sub.example.com
+	if isSubdomainOf(targetRPID, siteName) {
+		return true
+	}
+	
+	// Check domain mapping for SSO purposes
+	for domain, sites := range domainMap {
+		// If our target is in this domain group
+		if domain == targetRPID || isSubdomainOf(targetRPID, domain) {
+			// Check if the appParam site is also in this group
+			for _, mappedSite := range sites {
+				if siteName == mappedSite || strings.HasSuffix(siteName, mappedSite) {
+					return true
+				}
+			}
+		}
+	}
+	
+	return false
+}
+
+// GetEffectiveDomain extracts the effective domain from a URL or hostname
+func GetEffectiveDomain(origin string) (string, error) {
+	// If it doesn't start with http(s), assume it's already a hostname
+	if !strings.HasPrefix(origin, "http") {
+		// Still validate it's not a malformed URL
+		if strings.HasPrefix(origin, "://") {
+			return "", fmt.Errorf("invalid domain format: %s", origin)
+		}
+		return origin, nil
+	}
+	
+	parsedURL, err := url.Parse(origin)
+	if err != nil {
+		return "", err
+	}
+	
+	return parsedURL.Host, nil
+}
+
+// isSubdomainOf checks if domain is a subdomain of parentDomain
+func isSubdomainOf(domain, parentDomain string) bool {
+	return domain == parentDomain || strings.HasSuffix(domain, "."+parentDomain)
+}
+
+// GetDomainMap returns the domain mapping for external use
+func GetDomainMap() map[string][]string {
+	return domainMap
+}
+
+// GetDomainParents returns the domain parent mapping for external use
+func GetDomainParents() map[string]string {
+	return domainParents
 }

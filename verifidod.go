@@ -11,6 +11,7 @@ import (
 	"flag"
 	"math/big"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/cowboyrushforth/verifidod/attestation"
@@ -139,6 +140,9 @@ func (s *server) run() {
 		}
 
 		req := evt.Req
+		
+		// Apply FIDO2 RPID handling for all requests
+		s.processFIDO2Fields(req)
 
 		if req.Command == fidoauth.CmdAuthenticate {
 			seclog.Info("Got AuthenticateCmd site=%s", sitesignatures.FromAppParam(req.Authenticate.ApplicationParam))
@@ -211,7 +215,34 @@ func (s *server) handleAuthenticate(parentCtx context.Context, token *fidohid.So
 	// STEP 1: TPM Verification - Validate key handle
 	dummySig := sha256.Sum256([]byte("meticulously-Bacardi"))
 	
-	_, err = s.signer.SignASN1(keyHandle, appParam, dummySig[:])
+	// For FIDO2 compatibility, try to extract RPID from request if available
+	var rpid string
+	if req.RPID != "" {
+		rpid = req.RPID
+		seclog.Info("Using RPID from request: %s", rpid)
+	} else {
+		// Try to derive RPID from application parameter
+		siteName := sitesignatures.FromAppParam(req.Authenticate.ApplicationParam)
+		if !strings.HasPrefix(siteName, "<unknown") {
+			// If we know the site name, use it as RPID
+			domain, err := sitesignatures.GetEffectiveDomain(siteName)
+			if err == nil && domain != "" {
+				rpid = domain
+				seclog.Info("Derived RPID from app param: %s", rpid)
+			}
+		}
+	}
+	
+	// First, try with FIDO2-aware signature verification that understands RPIDs
+	if tpmWithRPID, ok := s.signer.(interface {
+		SignASN1WithRPID(keyHandle, applicationParam, digest []byte, rpid string) ([]byte, error)
+	}); ok && rpid != "" {
+		_, err = tpmWithRPID.SignASN1WithRPID(keyHandle, appParam, dummySig[:], rpid)
+	} else {
+		// Fall back to regular signature verification
+		_, err = s.signer.SignASN1(keyHandle, appParam, dummySig[:])
+	}
+	
 	if err != nil {
 		seclog.Error("Invalid key: %s (key handle size: %d)", err, len(keyHandle))
 		err := token.WriteResponse(parentCtx, evt, nil, statuscode.WrongData)
@@ -328,7 +359,16 @@ func (s *server) handleAuthenticate(parentCtx context.Context, token *fidohid.So
 	sigHash := sha256.New()
 	sigHash.Write(toSign.Bytes())
 	
-	sig, err := s.signer.SignASN1(keyHandle, appParam, sigHash.Sum(nil))
+	// Use RPID-aware signing if possible
+	var sig []byte
+	if tpmWithRPID, ok := s.signer.(interface {
+		SignASN1WithRPID(keyHandle, applicationParam, digest []byte, rpid string) ([]byte, error)
+	}); ok && rpid != "" {
+		sig, err = tpmWithRPID.SignASN1WithRPID(keyHandle, appParam, sigHash.Sum(nil), rpid)
+	} else {
+		sig, err = s.signer.SignASN1(keyHandle, appParam, sigHash.Sum(nil))
+	}
+	
 	if err != nil {
 		seclog.Error("Auth sign err: %s", err)
 		token.WriteResponse(parentCtx, evt, nil, statuscode.WrongData)
@@ -500,6 +540,37 @@ func (s *server) registerSite(ctx context.Context, token *fidohid.SoftToken, evt
 	}
 	
 	seclog.Info("Registration successful with both TPM and fingerprint")
+}
+
+// processFIDO2Fields extracts and processes FIDO2-specific fields from the request
+func (s *server) processFIDO2Fields(req *fidoauth.AuthenticatorRequest) {
+	// Try to extract RPID from application parameters
+	var appParam [32]byte
+	
+	// Get application parameter based on request type
+	if req.IsRegistrationRequest() && req.Register != nil {
+		appParam = req.Register.ApplicationParam
+	} else if req.IsAuthenticationRequest() && req.Authenticate != nil {
+		appParam = req.Authenticate.ApplicationParam
+	} else {
+		return // No app param available
+	}
+	
+	// Look up the site name
+	siteName := sitesignatures.FromAppParam(appParam)
+	
+	// If it's a known site, try to extract domain for RPID
+	if !strings.HasPrefix(siteName, "<unknown") {
+		domain, err := sitesignatures.GetEffectiveDomain(siteName)
+		if err == nil && domain != "" {
+			// Set the RPID in the request for FIDO2 domain matching
+			req.SetRPID(domain)
+			seclog.Debug("Set RPID to %s for site %s", domain, siteName)
+			
+			// Set origin info for additional cross-origin context
+			req.SetOriginInfo(siteName)
+		}
+	}
 }
 
 // isFullyAuthenticated checks if both authentication factors succeeded
