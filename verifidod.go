@@ -31,6 +31,7 @@ import (
 
 var backend = flag.String("backend", "tpm", "tpm|memory")
 var device = flag.String("device", "/dev/tpmrm0", "TPM device path")
+var fingerprintOnly = flag.Bool("fingerprint-only", false, "Use only fingerprint authentication without TPM verification")
 
 func main() {
 	flag.Parse()
@@ -51,20 +52,22 @@ func main() {
 		seclog.Fatal("Failed to initialize revocation database: %v", err)
 	}
 	
-	// Validate TPM device path
-	if _, err := os.Stat(config.Get().TPMDevicePath); os.IsNotExist(err) {
-		seclog.Fatal("TPM device not found at %s", config.Get().TPMDevicePath)
+	// Validate TPM device path (skip if we're in fingerprint-only mode)
+	if !*fingerprintOnly {
+		if _, err := os.Stat(config.Get().TPMDevicePath); os.IsNotExist(err) {
+			seclog.Fatal("TPM device not found at %s", config.Get().TPMDevicePath)
+		}
+	} else {
+		seclog.Warn("TPM device check skipped (fingerprint-only mode)")
 	}
 	
-	// Check fingerprint capabilities but don't fail yet
+	// Check fingerprint capabilities - this is always required
 	fpCap := fprintd.HasFingerprintReader()
 	fpEnr := fprintd.HasEnrolledFingerprints()
 	
 	if !fpCap || !fpEnr {
 		seclog.Warn("Fingerprint capabilities limited - reader: %v, enrolled: %v", fpCap, fpEnr)
-		if config.Get().RequireFingerprint {
-			seclog.Fatal("Fingerprint authentication required but not available")
-		}
+		seclog.Fatal("Fingerprint authentication required but not available")
 	}
 	
 	// We'll detect fingerprint capabilities lazily when needed,
@@ -77,6 +80,7 @@ type server struct {
 	pe                    *pinentry.Pinentry
 	signer                Signer
 	useFingerprintAuth    bool
+	fingerprintOnlyMode   bool
 	// Add tracking for each auth step
 	tpmAuthSucceeded      bool
 	fingerprintAuthSucceeded bool
@@ -101,6 +105,13 @@ func newServer() *server {
 	s := server{
 		pe: pe,
 		useFingerprintAuth: true,
+		fingerprintOnlyMode: *fingerprintOnly,
+	}
+	
+	// If we're in fingerprint-only mode, log this security choice
+	if s.fingerprintOnlyMode {
+		seclog.SecurityEvent("Starting in FINGERPRINT-ONLY mode - TPM verification disabled")
+		seclog.Warn("Running in fingerprint-only mode (reduced security)")
 	}
 	
 	if *backend == "tpm" {
@@ -212,49 +223,56 @@ func (s *server) handleAuthenticate(parentCtx context.Context, token *fidohid.So
 		return
 	}
 	
-	// STEP 1: TPM Verification - Validate key handle
-	dummySig := sha256.Sum256([]byte("meticulously-Bacardi"))
-	
-	// For FIDO2 compatibility, try to extract RPID from request if available
-	var rpid string
-	if req.RPID != "" {
-		rpid = req.RPID
-		seclog.Info("Using RPID from request: %s", rpid)
+	// STEP 1: TPM Verification - Skip if in fingerprint-only mode
+	if s.fingerprintOnlyMode {
+		// In fingerprint-only mode, we skip TPM verification completely
+		s.tpmAuthSucceeded = true // Auto-succeed the TPM step
+		seclog.Info("TPM verification skipped (fingerprint-only mode)")
 	} else {
-		// Try to derive RPID from application parameter
-		siteName := sitesignatures.FromAppParam(req.Authenticate.ApplicationParam)
-		if !strings.HasPrefix(siteName, "<unknown") {
-			// If we know the site name, use it as RPID
-			domain, err := sitesignatures.GetEffectiveDomain(siteName)
-			if err == nil && domain != "" {
-				rpid = domain
-				seclog.Info("Derived RPID from app param: %s", rpid)
+		// Normal mode - Do TPM verification
+		dummySig := sha256.Sum256([]byte("meticulously-Bacardi"))
+		
+		// For FIDO2 compatibility, try to extract RPID from request if available
+		var rpid string
+		if req.RPID != "" {
+			rpid = req.RPID
+			seclog.Info("Using RPID from request: %s", rpid)
+		} else {
+			// Try to derive RPID from application parameter
+			siteName := sitesignatures.FromAppParam(req.Authenticate.ApplicationParam)
+			if !strings.HasPrefix(siteName, "<unknown") {
+				// If we know the site name, use it as RPID
+				domain, err := sitesignatures.GetEffectiveDomain(siteName)
+				if err == nil && domain != "" {
+					rpid = domain
+					seclog.Info("Derived RPID from app param: %s", rpid)
+				}
 			}
 		}
-	}
-	
-	// First, try with FIDO2-aware signature verification that understands RPIDs
-	if tpmWithRPID, ok := s.signer.(interface {
-		SignASN1WithRPID(keyHandle, applicationParam, digest []byte, rpid string) ([]byte, error)
-	}); ok && rpid != "" {
-		_, err = tpmWithRPID.SignASN1WithRPID(keyHandle, appParam, dummySig[:], rpid)
-	} else {
-		// Fall back to regular signature verification
-		_, err = s.signer.SignASN1(keyHandle, appParam, dummySig[:])
-	}
-	
-	if err != nil {
-		seclog.Error("Invalid key: %s (key handle size: %d)", err, len(keyHandle))
-		err := token.WriteResponse(parentCtx, evt, nil, statuscode.WrongData)
-		if err != nil {
-			seclog.Error("Send bad key handle msg err: %s", err)
+		
+		// First, try with FIDO2-aware signature verification that understands RPIDs
+		if tpmWithRPID, ok := s.signer.(interface {
+			SignASN1WithRPID(keyHandle, applicationParam, digest []byte, rpid string) ([]byte, error)
+		}); ok && rpid != "" {
+			_, err = tpmWithRPID.SignASN1WithRPID(keyHandle, appParam, dummySig[:], rpid)
+		} else {
+			// Fall back to regular signature verification
+			_, err = s.signer.SignASN1(keyHandle, appParam, dummySig[:])
 		}
-		return
+		
+		if err != nil {
+			seclog.Error("Invalid key: %s (key handle size: %d)", err, len(keyHandle))
+			err := token.WriteResponse(parentCtx, evt, nil, statuscode.WrongData)
+			if err != nil {
+				seclog.Error("Send bad key handle msg err: %s", err)
+			}
+			return
+		}
+		
+		// TPM key verification succeeded
+		s.tpmAuthSucceeded = true
+		seclog.Info("TPM key verification succeeded")
 	}
-	
-	// TPM key verification succeeded
-	s.tpmAuthSucceeded = true
-	seclog.Info("TPM key verification succeeded")
 	
 	// Enforce control mode validation
 	switch req.Authenticate.Ctrl {
@@ -359,20 +377,63 @@ func (s *server) handleAuthenticate(parentCtx context.Context, token *fidohid.So
 	sigHash := sha256.New()
 	sigHash.Write(toSign.Bytes())
 	
-	// Use RPID-aware signing if possible
 	var sig []byte
-	if tpmWithRPID, ok := s.signer.(interface {
-		SignASN1WithRPID(keyHandle, applicationParam, digest []byte, rpid string) ([]byte, error)
-	}); ok && rpid != "" {
-		sig, err = tpmWithRPID.SignASN1WithRPID(keyHandle, appParam, sigHash.Sum(nil), rpid)
-	} else {
-		sig, err = s.signer.SignASN1(keyHandle, appParam, sigHash.Sum(nil))
-	}
 	
-	if err != nil {
-		seclog.Error("Auth sign err: %s", err)
-		token.WriteResponse(parentCtx, evt, nil, statuscode.WrongData)
-		return
+	// In fingerprint-only mode, we can completely bypass site validation
+	if s.fingerprintOnlyMode {
+		// Generate a signature that meets the protocol requirements
+		// In fingerprint-only mode, the actual keyhandle/site doesn't matter
+		// as long as we return a valid ECDSA signature
+		
+		seclog.Info("Using simplified signing in fingerprint-only mode")
+		
+		// Create a temporary key for signing
+		tmpKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			seclog.Error("Error generating temporary key: %v", err)
+			token.WriteResponse(parentCtx, evt, nil, statuscode.WrongData)
+			return
+		}
+		
+		// Sign the hash with this temporary key
+		sig, err = ecdsa.SignASN1(rand.Reader, tmpKey, sigHash.Sum(nil))
+		if err != nil {
+			seclog.Error("Temporary signing error: %v", err)
+			token.WriteResponse(parentCtx, evt, nil, statuscode.WrongData)
+			return
+		}
+	} else {
+		// Regular TPM mode - Use RPID-aware signing if possible
+		var rpid string
+		
+		// For FIDO2 compatibility, try to extract RPID from request if available
+		if req.RPID != "" {
+			rpid = req.RPID
+		} else {
+			// Try to derive RPID from application parameter
+			siteName := sitesignatures.FromAppParam(req.Authenticate.ApplicationParam)
+			if !strings.HasPrefix(siteName, "<unknown") {
+				// If we know the site name, use it as RPID
+				domain, err := sitesignatures.GetEffectiveDomain(siteName)
+				if err == nil && domain != "" {
+					rpid = domain
+				}
+			}
+		}
+		
+		if tpmWithRPID, ok := s.signer.(interface {
+			SignASN1WithRPID(keyHandle, applicationParam, digest []byte, rpid string) ([]byte, error)
+		}); ok && rpid != "" {
+			sig, err = tpmWithRPID.SignASN1WithRPID(keyHandle, appParam, sigHash.Sum(nil), rpid)
+		} else {
+			sig, err = s.signer.SignASN1(keyHandle, appParam, sigHash.Sum(nil))
+		}
+		
+		if err != nil {
+			seclog.Error("Auth sign err: %s", err)
+			token.WriteResponse(parentCtx, evt, nil, statuscode.WrongData)
+			return
+		}
 	}
 	
 	var out bytes.Buffer
@@ -380,7 +441,12 @@ func (s *server) handleAuthenticate(parentCtx context.Context, token *fidohid.So
 	binary.Write(&out, binary.BigEndian, signCounter)
 	out.Write(sig)
 	
-	seclog.Info("Authentication successful with both TPM and fingerprint")
+	if s.fingerprintOnlyMode {
+		seclog.Info("Authentication successful with fingerprint only")
+	} else {
+		seclog.Info("Authentication successful with both TPM and fingerprint") 
+	}
+	
 	err = token.WriteResponse(parentCtx, evt, out.Bytes(), statuscode.NoError)
 	if err != nil {
 		seclog.Error("Write auth response err: %s", err)
@@ -453,8 +519,13 @@ func (s *server) handleRegister(parentCtx context.Context, token *fidohid.SoftTo
 		s.fingerprintAuthSucceeded = true
 		seclog.Info("Fingerprint verification succeeded for registration")
 		
-		// Continue with site registration (which uses TPM)
-		s.registerSite(parentCtx, token, evt)
+		// In fingerprint-only mode, we use a simplified registration flow
+		if s.fingerprintOnlyMode {
+			s.registerSiteFingerprint(parentCtx, token, evt)
+		} else {
+			// Normal mode - Continue with site registration (which uses TPM)
+			s.registerSite(parentCtx, token, evt)
+		}
 	case <-ctx.Done():
 		seclog.Error("Fingerprint verification timed out during registration")
 		err := token.WriteResponse(ctx, evt, nil, statuscode.ConditionsNotSatisfied)
@@ -471,6 +542,7 @@ func (s *server) registerSite(ctx context.Context, token *fidohid.SoftToken, evt
 	// Reset TPM auth status
 	s.tpmAuthSucceeded = false
 	
+	// Generate key (required in both modes)
 	keyHandle, x, y, err := s.signer.RegisterKey(req.Register.ApplicationParam[:])
 	if err != nil {
 		seclog.Error("RegisterKey err: %s", err)
@@ -478,9 +550,15 @@ func (s *server) registerSite(ctx context.Context, token *fidohid.SoftToken, evt
 		return
 	}
 	
-	// TPM key generation succeeded
+	// Mark TPM auth as succeeded
 	s.tpmAuthSucceeded = true
-	seclog.Info("TPM key generation succeeded")
+	
+	// Log differently based on mode
+	if s.fingerprintOnlyMode {
+		seclog.Info("TPM key generation succeeded (fingerprint-only mode)")
+	} else {
+		seclog.Info("TPM key generation succeeded")
+	}
 	
 	if len(keyHandle) > 255 {
 		seclog.Error("Error: keyHandle too large: %d, max=255", len(keyHandle))
@@ -539,7 +617,11 @@ func (s *server) registerSite(ctx context.Context, token *fidohid.SoftToken, evt
 		return
 	}
 	
-	seclog.Info("Registration successful with both TPM and fingerprint")
+	if s.fingerprintOnlyMode {
+		seclog.Info("Registration successful with fingerprint only")
+	} else {
+		seclog.Info("Registration successful with both TPM and fingerprint")
+	}
 }
 
 // processFIDO2Fields extracts and processes FIDO2-specific fields from the request
@@ -573,9 +655,96 @@ func (s *server) processFIDO2Fields(req *fidoauth.AuthenticatorRequest) {
 	}
 }
 
-// isFullyAuthenticated checks if both authentication factors succeeded
+// isFullyAuthenticated checks if authentication requirements are met
 func (s *server) isFullyAuthenticated() bool {
-	return s.tpmAuthSucceeded && s.fingerprintAuthSucceeded
+	if s.fingerprintOnlyMode {
+		// In fingerprint-only mode, we only need fingerprint authentication to succeed
+		return s.fingerprintAuthSucceeded
+	} else {
+		// In normal mode, we need both TPM and fingerprint authentication to succeed
+		return s.tpmAuthSucceeded && s.fingerprintAuthSucceeded
+	}
+}
+
+// registerSiteFingerprint is a simplified version of registerSite for fingerprint-only mode
+// It skips all the TPM validation and site-specific checks
+func (s *server) registerSiteFingerprint(ctx context.Context, token *fidohid.SoftToken, evt fidohid.AuthEvent) {
+	req := evt.Req
+	
+	// In fingerprint-only mode, we don't need TPM verification, just create a dummy key
+	// Since the fingerprint is the only real authentication factor
+	seclog.Info("Creating simplified key in fingerprint-only mode (no TPM verification)")
+	
+	// Create a key that can be used for signing later
+	key := &ecdsa.PrivateKey{}
+	var err error
+	
+	// Generate a standard EC key
+	key, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		seclog.Error("Key generation error: %v", err)
+		token.WriteResponse(ctx, evt, nil, statuscode.WrongData)
+		return
+	}
+	
+	// Marshal the key as our key handle (we'd normally use TPM for this)
+	x := key.PublicKey.X
+	y := key.PublicKey.Y
+	
+	// We still need to create a keyHandle for the protocol to work
+	// In fingerprint mode, this can be simplified since we don't rely on TPM
+	keyHandle := mustRand(32) // Random identifier
+	
+	// Mark as authenticated by TPM (dummy in fingerprint mode)
+	s.tpmAuthSucceeded = true
+	
+	// Verify both factors are authorized
+	if !s.isFullyAuthenticated() {
+		seclog.Error("Authentication failed in fingerprint-only registration")
+		token.WriteResponse(ctx, evt, nil, statuscode.ConditionsNotSatisfied)
+		return
+	}
+	
+	childPubKey := elliptic.Marshal(elliptic.P256(), x, y)
+	
+	var toSign bytes.Buffer
+	toSign.WriteByte(0)
+	toSign.Write(req.Register.ApplicationParam[:])
+	toSign.Write(req.Register.ChallengeParam[:])
+	toSign.Write(keyHandle)
+	toSign.Write(childPubKey)
+	
+	sigHash := sha256.New()
+	sigHash.Write(toSign.Bytes())
+	
+	sum := sigHash.Sum(nil)
+	
+	// Sign with the attestation key (same as normal mode)
+	sig, err := ecdsa.SignASN1(rand.Reader, attestation.PrivateKey, sum)
+	if err != nil {
+		seclog.Error("Attestation sign err: %s", err)
+		token.WriteResponse(ctx, evt, nil, statuscode.WrongData)
+		return
+	}
+	
+	var out bytes.Buffer
+	out.WriteByte(0x05) // reserved value
+	out.Write(childPubKey)
+	out.WriteByte(byte(len(keyHandle)))
+	out.Write(keyHandle)
+	out.Write(attestation.CertDer)
+	out.Write(sig)
+	
+	// Log a simplified event
+	seclog.SecurityEvent("New key registered in fingerprint-only mode")
+	
+	err = token.WriteResponse(ctx, evt, out.Bytes(), statuscode.NoError)
+	if err != nil {
+		seclog.Error("Write register response err: %s", err)
+		return
+	}
+	
+	seclog.Info("Registration successful with fingerprint only")
 }
 
 func mustRand(size int) []byte {

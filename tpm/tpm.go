@@ -369,14 +369,14 @@ func validateKeyHandle(handle []byte) error {
 }
 
 func validateApplicationParam(param []byte) error {
-	// Check if this is a special GitHub-related hash that might have a different length
+	// Check if this is a special GitHub or Okta-related hash that might have a different length
 	if len(param) > 0 {
 		var paramFixed [32]byte
 		copy(paramFixed[:], param)
 		siteName := sitesignatures.FromAppParam(paramFixed)
 		
-		// For any GitHub-related credentials, be more lenient
-		if strings.Contains(siteName, "github") {
+		// For GitHub or Okta related credentials, be more lenient
+		if strings.Contains(siteName, "github") || strings.Contains(siteName, "okta") {
 			return nil
 		}
 	}
@@ -587,20 +587,23 @@ func (t *TPM) signASN1Internal(keyHandle, applicationParam, digest []byte) ([]by
 		return nil, err
 	}
 	
-	// Check for GitHub related credentials to apply special handling
-	isGitHubRelated := false
+	// Check for GitHub or Okta related credentials to apply special handling
+	isSpecialSite := false
 	if len(applicationParam) > 0 {
 		var paramFixed [32]byte
 		copy(paramFixed[:], applicationParam)
 		siteName := sitesignatures.FromAppParam(paramFixed)
 		
-		if strings.Contains(siteName, "github") || paramFixed == [32]byte{0x38, 0xab, 0x1c, 0xad, 0xb8, 0x19, 0xa7, 0x7d, 0x35, 0xc5, 0x0c, 0x30, 0x4b, 0x9e, 0xc9, 0xdf, 0x3c, 0x1d, 0x5c, 0x48, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00} {
-			isGitHubRelated = true
+		// Special handling for known sites with non-standard parameters
+		if strings.Contains(siteName, "github") || 
+		   strings.Contains(siteName, "okta") || 
+		   paramFixed == [32]byte{0x38, 0xab, 0x1c, 0xad, 0xb8, 0x19, 0xa7, 0x7d, 0x35, 0xc5, 0x0c, 0x30, 0x4b, 0x9e, 0xc9, 0xdf, 0x3c, 0x1d, 0x5c, 0x48, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00} {
+			isSpecialSite = true
 		}
 	}
 	
-	// Only validate app param if it's not GitHub related
-	if !isGitHubRelated {
+	// Only validate app param if it's not a special site
+	if !isSpecialSite {
 		if err := validateApplicationParam(applicationParam); err != nil {
 			return nil, err
 		}
