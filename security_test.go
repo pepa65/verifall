@@ -31,8 +31,8 @@ func (m *mockSigner) Counter() uint32 {
 	return 42
 }
 
-// TestDualFactorEnforcement tests that both TPM and fingerprint auth are required
-func TestDualFactorEnforcement(t *testing.T) {
+// TestFingerprintAuthentication tests that fingerprint authentication is required
+func TestFingerprintAuthentication(t *testing.T) {
 	// This is a unit test, not an integration test
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
@@ -45,8 +45,7 @@ func TestDualFactorEnforcement(t *testing.T) {
 		useFingerprintAuth: true,
 	}
 	
-	// Test case: TPM succeeds, fingerprint fails
-	s.tpmAuthSucceeded = true
+	// Test case: Fingerprint fails
 	s.fingerprintAuthSucceeded = false
 	
 	// Check if final authorization is rejected
@@ -54,21 +53,11 @@ func TestDualFactorEnforcement(t *testing.T) {
 		t.Error("Authentication should fail when fingerprint verification fails")
 	}
 	
-	// Test case: TPM fails, fingerprint succeeds
-	s.tpmAuthSucceeded = false
-	s.fingerprintAuthSucceeded = true
-	
-	// Check if final authorization is rejected
-	if s.isFullyAuthenticated() {
-		t.Error("Authentication should fail when TPM verification fails")
-	}
-	
-	// Test case: Both TPM and fingerprint succeed
-	s.tpmAuthSucceeded = true
+	// Test case: Fingerprint succeeds
 	s.fingerprintAuthSucceeded = true
 	
 	// Check if final authorization is approved
 	if !s.isFullyAuthenticated() {
-		t.Error("Authentication should succeed when both verifications pass")
+		t.Error("Authentication should succeed when fingerprint verification passes")
 	}
 }

@@ -13,17 +13,16 @@ import (
 
 // Configuration holds the application configuration
 type Configuration struct {
-	// Device paths
-	TPMDevicePath        string `json:"tpm_device_path"`
+	// Storage settings
+	CredentialStorePath  string `json:"credential_store_path"` // Path to JSON credential store
 	
 	// Security settings
-	RequireFingerprint   bool   `json:"require_fingerprint"`
-	RequireTPM           bool   `json:"require_tpm"`
-	VerificationTimeout  int    `json:"verification_timeout_ms"`
-	MaxRetries           int    `json:"max_retries"`
+	RequireFingerprint   bool   `json:"require_fingerprint"`   // Whether fingerprint auth is required
+	VerificationTimeout  int    `json:"verification_timeout_ms"` // Timeout for fingerprint verification
+	MaxRetries           int    `json:"max_retries"`           // Maximum number of retry attempts
 	
 	// Logging
-	LogLevel             int    `json:"log_level"`
+	LogLevel             int    `json:"log_level"`             // Log level (debug, info, warning, error)
 }
 
 var (
@@ -34,10 +33,15 @@ var (
 
 // DefaultConfig returns the default configuration
 func DefaultConfig() Configuration {
+	// Default store path is in the user's home directory
+	homePath := ""
+	if home, err := os.UserHomeDir(); err == nil {
+		homePath = filepath.Join(home, ".config", "verifidod", "credentials.json")
+	}
+
 	return Configuration{
-		TPMDevicePath:       "/dev/tpmrm0",
+		CredentialStorePath: homePath,
 		RequireFingerprint:  true,
-		RequireTPM:          true,
 		VerificationTimeout: 5000,
 		MaxRetries:          3,
 		LogLevel:            seclog.LevelInfo,
@@ -93,9 +97,8 @@ func LoadConfig(configPath string) error {
 		}
 	}
 	
-	// Enforce security settings - prevent disabling dual-factor auth
+	// Enforce security settings - fingerprint authentication is required
 	config.RequireFingerprint = true
-	config.RequireTPM = true
 	
 	// Set log level
 	seclog.SetLevel(config.LogLevel)

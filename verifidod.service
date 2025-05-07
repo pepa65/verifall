@@ -1,5 +1,5 @@
 [Unit]
-Description=VerifidoD FIDO TPM Authentication Service with fprintd
+Description=VerifidoD FIDO Authentication Service with Fingerprint Verification
 Documentation=https://github.com/cowboyrushforth/verifidod
 After=network.target 
 
@@ -13,7 +13,7 @@ RestartSec=5
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=read-only
-ProtectSystem=strict  # Upgraded from full
+ProtectSystem=strict
 ProtectHostname=true
 ProtectKernelLogs=true
 ProtectKernelModules=true
@@ -35,8 +35,6 @@ ProcSubset=pid
 # Allow access to devices while maintaining some security
 PrivateDevices=false
 # Still restrict to only the devices we need
-DeviceAllow=/dev/tpmrm0 rw
-DeviceAllow=/dev/tpm0 rw
 DeviceAllow=/dev/uhid rw
 
 [Install]

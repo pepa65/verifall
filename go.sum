@@ -2,10 +2,6 @@ github.com/foxcpp/go-assuan v1.0.0 h1:KDSEmEGdHOzOjKmFUoaX/FGk1NxG/mHNAIdyksM8e4
 github.com/foxcpp/go-assuan v1.0.0/go.mod h1:dQEJ9EaSSrUjd/g2PVaVEuV0TaoMDGwoh9XIDH1Q/Sc=
 github.com/godbus/dbus/v5 v5.1.0 h1:4KLkAxT3aOY8Li4FRJe/KvhoNFFxo0m6fNuFUO8QJUk=
 github.com/godbus/dbus/v5 v5.1.0/go.mod h1:xhWf0FNVPg57R7Z0UbKHbJfkEywrmjJnf7w5xrFpKfA=
-github.com/google/go-tpm v0.9.3 h1:+yx0/anQuGzi+ssRqeD6WpXjW2L/V0dItUayO0i9sRc=
-github.com/google/go-tpm v0.9.3/go.mod h1:h9jEsEECg7gtLis0upRBQU+GhYVH6jMjrFxI8u6bVUY=
-github.com/google/go-tpm-tools v0.3.13-0.20230620182252-4639ecce2aba h1:qJEJcuLzH5KDR0gKc0zcktin6KSAwL7+jWKBYceddTc=
-github.com/google/go-tpm-tools v0.3.13-0.20230620182252-4639ecce2aba/go.mod h1:EFYHy8/1y2KfgTAsx7Luu7NGhoxtuVHnNo8jE7FikKc=
 github.com/pkg/term v1.1.0/go.mod h1:E25nymQcrSllhX42Ok8MRm1+hyBdHY0dCeiKZ9jpNGw=
 github.com/psanford/uhid v0.0.0-20210516231035-a7c1e481958d h1:dTFeS1I1nq6RGwQJ6hXS5uUGNu5EM5vJiQsHqv27Msk=
 github.com/psanford/uhid v0.0.0-20210516231035-a7c1e481958d/go.mod h1:l7AmGL56H606RdpAQZ3qizn5ur7SoO9uQA2ZT7ZJ4RI=
