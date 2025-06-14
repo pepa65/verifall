@@ -1,11 +1,11 @@
 [Unit]
-Description=VerifidoD FIDO Authentication Service with Fingerprint Verification
-Documentation=https://github.com/cowboyrushforth/verifidod
+Description=Verifall FIDO Authentication Service
+Documentation=https://github.com/pepa65/verifall
 After=network.target 
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/verifidod
+ExecStart=/usr/local/bin/verifall
 Restart=on-failure
 RestartSec=5
 

@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"math/big"
 	"testing"
-	
-	"github.com/cowboyrushforth/verifidod/pinentry"
+
+	"github.com/pepa65/verifall/pinentry"
 )
 
 // Mock objects for testing
@@ -37,25 +37,25 @@ func TestFingerprintAuthentication(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
-	
+
 	// Create a server with a mock signer
 	s := &server{
-		pe: pinentry.New(),
-		signer: &mockSigner{},
+		pe:                 pinentry.New(),
+		signer:             &mockSigner{},
 		useFingerprintAuth: true,
 	}
-	
+
 	// Test case: Fingerprint fails
 	s.fingerprintAuthSucceeded = false
-	
+
 	// Check if final authorization is rejected
 	if s.isFullyAuthenticated() {
 		t.Error("Authentication should fail when fingerprint verification fails")
 	}
-	
+
 	// Test case: Fingerprint succeeds
 	s.fingerprintAuthSucceeded = true
-	
+
 	// Check if final authorization is approved
 	if !s.isFullyAuthenticated() {
 		t.Error("Authentication should succeed when fingerprint verification passes")

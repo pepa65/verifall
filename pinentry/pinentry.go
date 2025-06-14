@@ -11,7 +11,7 @@ import (
 
 	assuan "github.com/foxcpp/go-assuan/client"
 	"github.com/foxcpp/go-assuan/pinentry"
-	"github.com/cowboyrushforth/verifidod/fprintd"
+	"github.com/pepa65/verifall/fprintd"
 )
 
 func New() *Pinentry {
@@ -21,8 +21,8 @@ func New() *Pinentry {
 }
 
 type Pinentry struct {
-	mu                sync.Mutex
-	activeRequest     *request
+	mu                 sync.Mutex
+	activeRequest      *request
 	useFingerprintAuth bool
 }
 
@@ -98,25 +98,25 @@ func (pe *Pinentry) prompt(req *request, prompt string) {
 	}
 
 	// ALWAYS use fingerprint verification
-	log.Printf("Starting fingerprint verification")
-	
+	log.Printf("Starting verification")
+
 	// Implement exponential backoff for fingerprint verification
 	maxRetries := 3
 	retryDelay := 500 * time.Millisecond
-	
+
 	for i := 0; i < maxRetries; i++ {
 		fpResult, err := fprintd.Verify()
-		
+
 		if err == nil {
 			// Return the result only if verification succeeded
 			if fpResult {
-				log.Printf("Fingerprint verification succeeded")
+				log.Printf("Verification succeeded")
 				sendResult(Result{OK: true})
 				return
 			}
-			
-			log.Printf("Fingerprint verification failed (attempt %d/%d)", i+1, maxRetries)
-			
+
+			log.Printf("Verification failed (attempt %d/%d)", i+1, maxRetries)
+
 			// Not an error, but verification failed
 			if i == maxRetries-1 {
 				sendResult(Result{OK: false})
@@ -124,14 +124,14 @@ func (pe *Pinentry) prompt(req *request, prompt string) {
 			}
 		} else {
 			// Critical error - no retry
-			log.Printf("Fingerprint verification error: %v", err)
+			log.Printf("Verification error: %v", err)
 			sendResult(Result{
-				OK: false,
-				Error: fmt.Errorf("fingerprint verification failed: %w", err),
+				OK:    false,
+				Error: fmt.Errorf("Verification failed: %w", err),
 			})
 			return
 		}
-		
+
 		// Exponential backoff
 		time.Sleep(retryDelay)
 		retryDelay *= 2

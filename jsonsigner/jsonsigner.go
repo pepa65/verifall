@@ -15,37 +15,37 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cowboyrushforth/verifidod/seclog"
+	"github.com/pepa65/verifall/seclog"
 )
 
 // KeyData stores information about a registered key
 type KeyData struct {
-	KeyHandle       string    `json:"key_handle"`       // Base64 encoded key handle
-	PrivateKeyD     string    `json:"private_key_d"`    // Base64 encoded private key D component
-	PublicKeyX      string    `json:"public_key_x"`     // Base64 encoded public key X component
-	PublicKeyY      string    `json:"public_key_y"`     // Base64 encoded public key Y component
-	AppParameter    string    `json:"app_parameter"`    // Base64 encoded application parameter
-	CreatedAt       time.Time `json:"created_at"`       // When the key was created
-	LastUsed        time.Time `json:"last_used"`        // When the key was last used
-	UseCount        int       `json:"use_count"`        // Number of times the key has been used
+	KeyHandle    string    `json:"key_handle"`    // Base64 encoded key handle
+	PrivateKeyD  string    `json:"private_key_d"` // Base64 encoded private key D component
+	PublicKeyX   string    `json:"public_key_x"`  // Base64 encoded public key X component
+	PublicKeyY   string    `json:"public_key_y"`  // Base64 encoded public key Y component
+	AppParameter string    `json:"app_parameter"` // Base64 encoded application parameter
+	CreatedAt    time.Time `json:"created_at"`    // When the key was created
+	LastUsed     time.Time `json:"last_used"`     // When the key was last used
+	UseCount     int       `json:"use_count"`     // Number of times the key has been used
 }
 
 // JSONStore is the persistent storage for all registered keys
 type JSONStore struct {
-	Keys            map[string]KeyData `json:"keys"`            // Map of key handles to key data
-	Counter         uint32             `json:"counter"`         // Monotonically increasing counter
-	MasterKeyHash   string             `json:"master_key_hash"` // Hash of master key for verification
-	CreatedAt       time.Time          `json:"created_at"`      // When this store was created
-	LastUpdated     time.Time          `json:"last_updated"`    // When this store was last updated
+	Keys          map[string]KeyData `json:"keys"`            // Map of key handles to key data
+	Counter       uint32             `json:"counter"`         // Monotonically increasing counter
+	MasterKeyHash string             `json:"master_key_hash"` // Hash of master key for verification
+	CreatedAt     time.Time          `json:"created_at"`      // When this store was created
+	LastUpdated   time.Time          `json:"last_updated"`    // When this store was last updated
 }
 
 // JSONSigner implements the Signer interface using JSON file for persistence
 type JSONSigner struct {
-	storePath      string
-	store          JSONStore
-	masterKey      []byte
-	mutex          sync.Mutex
-	baseTime       time.Time
+	storePath string
+	store     JSONStore
+	masterKey []byte
+	mutex     sync.Mutex
+	baseTime  time.Time
 }
 
 // New creates a new JSONSigner that persists keys to the given path
@@ -56,7 +56,7 @@ func New(storePath string) (*JSONSigner, error) {
 		if err != nil {
 			return nil, fmt.Errorf("cannot get home directory: %w", err)
 		}
-		storePath = filepath.Join(home, ".config", "verifidod", "credentials.json")
+		storePath = filepath.Join(home, ".config", "verifall", "credentials.json")
 	}
 
 	// Ensure directory exists
@@ -135,7 +135,7 @@ func (s *JSONSigner) initStore() error {
 // saveStore persists the current state to disk
 func (s *JSONSigner) saveStore() error {
 	s.store.LastUpdated = time.Now()
-	
+
 	data, err := json.MarshalIndent(s.store, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal store: %w", err)
