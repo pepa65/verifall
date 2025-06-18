@@ -6,7 +6,6 @@ import (
 	"os"
 	"runtime"
 	"strings"
-	"time"
 )
 
 const (
@@ -19,7 +18,7 @@ const (
 
 var (
 	currentLevel = LevelInfo
-	logger      = log.New(os.Stderr, "", log.LstdFlags)
+	logger       = log.New(os.Stderr, "", log.LstdFlags)
 )
 
 // SetLevel sets the minimum log level
@@ -43,8 +42,7 @@ func getCallerInfo() string {
 // formatMessage formats a log message with timestamp, level, and caller info
 func formatMessage(level string, message string) string {
 	caller := getCallerInfo()
-	timestamp := time.Now().Format("2006-01-02 15:04:05.000")
-	return fmt.Sprintf("%s [%s] %s - %s", timestamp, level, caller, message)
+	return fmt.Sprintf("[%s] %s - %s", level, caller, message)
 }
 
 // SecurityEvent logging - never suppress these

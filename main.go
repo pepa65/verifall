@@ -26,13 +26,18 @@ import (
 	"github.com/pepa65/verifall/validate"
 )
 
+const version = "v0.0.1"
+
 var storePath = flag.String("store", "", "Path to the credential store (defaults to ~/.config/verifall/credentials.json)")
-
 func main() {
-	flag.Parse()
-
 	// Initialize secure logging
 	seclog.SetLevel(seclog.LevelInfo)
+	versionFlag := flag.Bool("version", false, "print version information")
+	flag.Parse()
+	if *versionFlag {
+		seclog.Info("Version: %s", version)
+		return
+	}
 
 	// Load configuration
 	err := config.LoadConfig("")
