@@ -1,4 +1,4 @@
-# verifall v0.0.1
+# verifall v0.0.2
 **FIDO Token for Linux**
 * Project `verifall` is a stripped [verifidod](https://github.com/cowboyrushforth/verifidod)
   in order to not require fingerprints (nor TPM).
@@ -47,11 +47,20 @@ Please see the [INSTALL.md](INSTALL.md) file for detailed installation and confi
 The binary can be run as a user systemd service. Refer to [INSTALL.md](INSTALL.md) for complete setup instructions.
 
 ```
-# Enable (for future automatic start) and start the service (after installation):
+### Enable (for future automatic start) and start the service (after installation):
 systemctl --user enable --now verifall.service
 
-# View service status:
+### View service status:
 systemctl --user status verifall.service
+```
+
+## Usage
+```
+Usage of verifall:
+  -store string
+    	Path to the credential store (defaults to ~/.config/verifall/credentials.json)
+  -version
+    	print version information
 ```
 
 ## License
