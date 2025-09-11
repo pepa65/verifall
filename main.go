@@ -26,7 +26,7 @@ import (
 	"github.com/pepa65/verifall/validate"
 )
 
-const version = "0.0.4"
+const version = "0.0.5"
 
 var storePath = flag.String("store", "", "Path to the credential store (defaults to ~/.config/verifall/credentials.json)")
 func main() {
