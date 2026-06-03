@@ -1,4 +1,4 @@
-# verifall v0.0.14
+# verifall v0.0.15
 **FIDO Token for Linux**
 * Project `verifall` is a stripped [verifidod](https://github.com/cowboyrushforth/verifidod)
   in order to not require fingerprints (nor TPM).
